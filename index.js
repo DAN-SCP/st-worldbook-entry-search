@@ -11,292 +11,62 @@ import {
 import { accountStorage } from '../../../util/AccountStorage.js';
 
 const EXTENSION_ID = 'st-worldbook-entry-search';
-const STORAGE_KEY = 'st-worldbook-entry-search-history';
+const SEARCH_HISTORY_KEY = 'st-worldbook-entry-search-history';
 const ENTRY_HISTORY_KEY = 'st-worldbook-entry-search-entry-history';
-const FLOATING_LAUNCHER_ID = 'wbes-floating-launcher';
 const WI_PER_PAGE_KEY = 'WI_PerPage';
-const WI_PER_PAGE_DEFAULT = 25;
 const MAX_HISTORY = 20;
 const MAX_ENTRY_HISTORY = 20;
+const MAX_RESULTS = 120;
 const SEARCH_DELAY = 200;
-const MAX_RESULTS = 100;
+const DEFAULT_PER_PAGE = 25;
 
-let state = {
-    isOpen: false,
+const state = {
     query: '',
     results: [],
-    isLoading: false,
+    loading: false,
     status: '',
-    lastSearchId: 0,
+    searchId: 0,
 };
 
-const elements = {};
-let lastLauncherOpenAt = 0;
-let lastDebugReason = '';
-let globalKeydownBound = false;
+const ui = {
+    shell: null,
+    input: null,
+    results: null,
+    history: null,
+    entryHistory: null,
+    activeCount: null,
+    clearHistory: null,
+    clearEntryHistory: null,
+};
 
-function debounce(fn, wait) {
-    let timeout = null;
-    return (...args) => {
-        clearTimeout(timeout);
-        timeout = setTimeout(() => fn(...args), wait);
-    };
-}
+let lastOpenAt = 0;
+let keyboardBound = false;
+let mutationObserver = null;
 
 function delay(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-function isMobileViewport() {
-    return Boolean(globalThis.matchMedia?.('(max-width: 700px)')?.matches || globalThis.innerWidth <= 700);
-}
-
-function bindPanelElements() {
-    elements.backdrop = document.getElementById('wbes-backdrop');
-    elements.panel = document.getElementById('wbes-panel');
-    elements.input = document.getElementById('wbes-input');
-    elements.history = document.getElementById('wbes-history-list');
-    elements.entryHistory = document.getElementById('wbes-entry-history-list');
-    elements.results = document.getElementById('wbes-results-list');
-    elements.clearHistory = document.getElementById('wbes-clear-history');
-    elements.clearEntryHistory = document.getElementById('wbes-clear-entry-history');
-}
-
-function hasCompletePanelElements() {
-    bindPanelElements();
-    return Boolean(
-        elements.backdrop
-        && elements.panel
-        && elements.input
-        && elements.history
-        && elements.entryHistory
-        && elements.results
-        && elements.clearHistory
-        && elements.clearEntryHistory
-    );
-}
-
-function getMissingPanelElements() {
-    bindPanelElements();
-    return Object.entries({
-        backdrop: elements.backdrop,
-        panel: elements.panel,
-        input: elements.input,
-        history: elements.history,
-        entryHistory: elements.entryHistory,
-        results: elements.results,
-        clearHistory: elements.clearHistory,
-        clearEntryHistory: elements.clearEntryHistory,
-    }).filter(([, value]) => !value).map(([key]) => key);
-}
-
-function clearElementRefs() {
-    Object.keys(elements).forEach(key => {
-        elements[key] = null;
-    });
-}
-
-function removeExistingUi() {
-    document.getElementById('wbes-launcher')?.remove();
-    document.getElementById(FLOATING_LAUNCHER_ID)?.remove();
-    document.getElementById('wbes-backdrop')?.remove();
-    document.getElementById('wbes-debug-window')?.remove();
-    clearElementRefs();
-}
-
-function isPanelVisible() {
-    const backdrop = document.getElementById('wbes-backdrop');
-    const panel = document.getElementById('wbes-panel');
-    if (!(backdrop instanceof HTMLElement) || !(panel instanceof HTMLElement)) {
-        return false;
-    }
-
-    const backdropStyle = getComputedStyle(backdrop);
-    const panelStyle = getComputedStyle(panel);
-    const panelRect = panel.getBoundingClientRect();
-
-    return !backdrop.hidden
-        && !backdrop.hasAttribute('hidden')
-        && backdrop.classList.contains('wbes-open')
-        && backdropStyle.display !== 'none'
-        && backdropStyle.visibility !== 'hidden'
-        && Number(backdropStyle.opacity || 1) > 0
-        && panelStyle.display !== 'none'
-        && panelStyle.visibility !== 'hidden'
-        && panelRect.width > 0
-        && panelRect.height > 0;
-}
-
-function collectDebugInfo(reason = lastDebugReason) {
-    const backdrop = document.getElementById('wbes-backdrop');
-    const panel = document.getElementById('wbes-panel');
-    const launcher = document.getElementById('wbes-launcher');
-    const floatingLauncher = document.getElementById(FLOATING_LAUNCHER_ID);
-    const launcherParent = launcher?.parentElement ?? null;
-    const options = document.getElementById('options');
-    const optionsContent = document.querySelector('#options .options-content');
-    const backdropStyle = backdrop instanceof HTMLElement ? getComputedStyle(backdrop) : null;
-    const panelStyle = panel instanceof HTMLElement ? getComputedStyle(panel) : null;
-    const optionsStyle = options instanceof HTMLElement ? getComputedStyle(options) : null;
-    const panelRect = panel instanceof HTMLElement ? panel.getBoundingClientRect() : null;
-
-    return {
-        reason,
-        extensionId: EXTENSION_ID,
-        timestamp: new Date().toISOString(),
-        isMobileViewport: isMobileViewport(),
-        viewport: {
-            innerWidth: globalThis.innerWidth,
-            innerHeight: globalThis.innerHeight,
-            visualViewportWidth: globalThis.visualViewport?.width ?? null,
-            visualViewportHeight: globalThis.visualViewport?.height ?? null,
-        },
-        state: {
-            isOpen: state.isOpen,
-            lastLauncherOpenAt,
-        },
-        elements: {
-            launcherExists: Boolean(launcher),
-            floatingLauncherExists: Boolean(floatingLauncher),
-            launcherParentId: launcherParent?.id || null,
-            launcherParentClass: launcherParent?.className || null,
-            optionsExists: Boolean(options),
-            optionsContentExists: Boolean(optionsContent),
-            backdropExists: Boolean(backdrop),
-            panelExists: Boolean(panel),
-            missingPanelElements: getMissingPanelElements(),
-        },
-        options: options instanceof HTMLElement ? {
-            inlineDisplay: options.style.display,
-            computedDisplay: optionsStyle?.display,
-            computedVisibility: optionsStyle?.visibility,
-            computedZIndex: optionsStyle?.zIndex,
-        } : null,
-        backdrop: backdrop instanceof HTMLElement ? {
-            hidden: backdrop.hidden,
-            hasHiddenAttribute: backdrop.hasAttribute('hidden'),
-            className: backdrop.className,
-            inlineDisplay: backdrop.style.display,
-            inlineVisibility: backdrop.style.visibility,
-            inlineOpacity: backdrop.style.opacity,
-            inlineZIndex: backdrop.style.zIndex,
-            computedDisplay: backdropStyle?.display,
-            computedVisibility: backdropStyle?.visibility,
-            computedOpacity: backdropStyle?.opacity,
-            computedZIndex: backdropStyle?.zIndex,
-        } : null,
-        panel: panel instanceof HTMLElement ? {
-            className: panel.className,
-            computedDisplay: panelStyle?.display,
-            computedVisibility: panelStyle?.visibility,
-            computedOpacity: panelStyle?.opacity,
-            rect: panelRect ? {
-                width: panelRect.width,
-                height: panelRect.height,
-                top: panelRect.top,
-                left: panelRect.left,
-            } : null,
-        } : null,
-        panelVisible: isPanelVisible(),
+function debounce(fn, wait) {
+    let timer = null;
+    return (...args) => {
+        clearTimeout(timer);
+        timer = setTimeout(() => fn(...args), wait);
     };
 }
 
-function forceBackdropVisible() {
-    bindPanelElements();
-    if (!(elements.backdrop instanceof HTMLElement)) {
-        return false;
-    }
-
-    elements.backdrop.hidden = false;
-    elements.backdrop.removeAttribute('hidden');
-    elements.backdrop.classList.add('wbes-open');
-    elements.backdrop.style.display = 'flex';
-    elements.backdrop.style.visibility = 'visible';
-    elements.backdrop.style.opacity = '1';
-    elements.backdrop.style.zIndex = '9999999';
-    return true;
+function normalizeText(value) {
+    return String(value ?? '').trim();
 }
 
-function forceOpenPanel() {
-    if (!hasCompletePanelElements()) {
-        rebuildUi();
+function normalizeArray(value) {
+    if (Array.isArray(value)) {
+        return value.map(normalizeText).filter(Boolean);
     }
-    bindPanelElements();
-
-    if (!forceBackdropVisible()) {
-        showDebugWindow('强制打开失败：backdrop 不存在');
-        return;
+    if (typeof value === 'string') {
+        return value.split(',').map(normalizeText).filter(Boolean);
     }
-
-    state.isOpen = true;
-    if (isMobileViewport() && document.activeElement instanceof HTMLElement) {
-        document.activeElement.blur();
-    }
-
-    renderHistory();
-    renderEntryHistory();
-    renderResults();
-}
-
-function rebuildAndOpenPanel() {
-    rebuildUi();
-    showPanel();
-}
-
-async function copyDebugInfo() {
-    const info = JSON.stringify(collectDebugInfo('manual copy'), null, 2);
-    const output = document.getElementById('wbes-debug-output');
-    if (output instanceof HTMLTextAreaElement) {
-        output.value = info;
-        output.select();
-    }
-
-    try {
-        await navigator.clipboard.writeText(info);
-        toastSuccess('调试信息已复制');
-    } catch (error) {
-        console.warn(`[${EXTENSION_ID}] Clipboard copy failed.`, error);
-        toastInfo('复制失败，信息已显示在文本框里，请手动复制。');
-    }
-}
-
-function showDebugWindow(reason = '面板未显示') {
-    lastDebugReason = reason;
-    document.getElementById('wbes-debug-window')?.remove();
-
-    const info = collectDebugInfo(reason);
-    const windowElement = document.createElement('div');
-    windowElement.id = 'wbes-debug-window';
-    windowElement.innerHTML = `
-        <div class="wbes-debug-card">
-            <div class="wbes-debug-header">
-                <strong>世界书搜索诊断</strong>
-                <button type="button" class="menu_button menu_button_icon" id="wbes-debug-close" title="关闭">
-                    <i class="fa-solid fa-xmark"></i>
-                </button>
-            </div>
-            <div class="wbes-debug-summary">
-                <div>原因：${escapeHtml(reason)}</div>
-                <div>面板可见：${info.panelVisible ? '是' : '否'}</div>
-                <div>手机视图：${info.isMobileViewport ? '是' : '否'} · ${info.viewport.innerWidth}x${info.viewport.innerHeight}</div>
-                <div>缺失元素：${escapeHtml(info.elements.missingPanelElements.join(', ') || '无')}</div>
-                <div>入口父级：${escapeHtml(info.elements.launcherParentId || info.elements.launcherParentClass || '无')}</div>
-                <div>backdrop：${info.elements.backdropExists ? '存在' : '不存在'} · panel：${info.elements.panelExists ? '存在' : '不存在'}</div>
-            </div>
-            <div class="wbes-debug-actions">
-                <button type="button" class="menu_button" id="wbes-debug-force">强制打开</button>
-                <button type="button" class="menu_button" id="wbes-debug-rebuild">重建面板</button>
-                <button type="button" class="menu_button" id="wbes-debug-copy">复制信息</button>
-            </div>
-            <textarea id="wbes-debug-output" readonly>${escapeHtml(JSON.stringify(info, null, 2))}</textarea>
-        </div>
-    `;
-
-    document.body.appendChild(windowElement);
-    document.getElementById('wbes-debug-close')?.addEventListener('click', () => windowElement.remove());
-    document.getElementById('wbes-debug-force')?.addEventListener('click', forceOpenPanel);
-    document.getElementById('wbes-debug-rebuild')?.addEventListener('click', rebuildAndOpenPanel);
-    document.getElementById('wbes-debug-copy')?.addEventListener('click', copyDebugInfo);
+    return [];
 }
 
 function escapeHtml(value) {
@@ -308,86 +78,65 @@ function escapeHtml(value) {
         .replaceAll("'", '&#039;');
 }
 
-function normalizeText(value) {
-    return String(value ?? '').trim();
+function isMobile() {
+    return Boolean(window.matchMedia?.('(max-width: 700px)')?.matches || window.innerWidth <= 700);
 }
 
-function normalizeArray(value) {
-    if (Array.isArray(value)) {
-        return value.map(normalizeText).filter(Boolean);
-    }
-
-    if (typeof value === 'string') {
-        return value.split(',').map(normalizeText).filter(Boolean);
-    }
-
-    return [];
+function toastInfo(message) {
+    globalThis.toastr?.info?.(message, '世界书搜索');
 }
 
-function getHistory() {
+function toastSuccess(message) {
+    globalThis.toastr?.success?.(message, '世界书搜索');
+}
+
+function toastError(message) {
+    globalThis.toastr?.error?.(message, '世界书搜索');
+}
+
+function getJsonArray(key) {
     try {
-        const parsed = JSON.parse(localStorage.getItem(STORAGE_KEY) || '[]');
-        return Array.isArray(parsed) ? parsed.filter(Boolean).slice(0, MAX_HISTORY) : [];
+        const parsed = JSON.parse(localStorage.getItem(key) || '[]');
+        return Array.isArray(parsed) ? parsed : [];
     } catch {
         return [];
     }
 }
 
-function saveHistory(history) {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(history.slice(0, MAX_HISTORY)));
+function saveJsonArray(key, value, limit) {
+    localStorage.setItem(key, JSON.stringify(value.slice(0, limit)));
 }
 
-function dedupeHistory(history) {
+function getSearchHistory() {
     const seen = new Set();
     const next = [];
-
-    for (const item of history) {
-        const cleaned = normalizeText(item);
-        const key = cleaned.toLowerCase();
-        if (!cleaned || seen.has(key)) continue;
-
+    for (const item of getJsonArray(SEARCH_HISTORY_KEY)) {
+        const text = normalizeText(item);
+        const key = text.toLowerCase();
+        if (!text || seen.has(key)) continue;
         seen.add(key);
-        next.push(cleaned);
+        next.push(text);
     }
-
     return next.slice(0, MAX_HISTORY);
 }
 
-function cleanupHistory() {
-    const current = getHistory();
-    const next = dedupeHistory(current);
-    if (JSON.stringify(current) !== JSON.stringify(next)) {
-        saveHistory(next);
-    }
+function addSearchHistory(query) {
+    const text = normalizeText(query);
+    if (!text) return;
+    const next = [text, ...getSearchHistory().filter(item => item.toLowerCase() !== text.toLowerCase())];
+    saveJsonArray(SEARCH_HISTORY_KEY, next, MAX_HISTORY);
+    renderSearchHistory();
 }
 
-function addHistory(query) {
-    const cleaned = normalizeText(query);
-    if (!cleaned) return;
-
-    const next = dedupeHistory([cleaned, ...getHistory().filter(item => item.toLowerCase() !== cleaned.toLowerCase())]);
-    saveHistory(next);
-    renderHistory();
-}
-
-function clearHistory() {
-    localStorage.removeItem(STORAGE_KEY);
-    renderHistory();
+function clearSearchHistory() {
+    localStorage.removeItem(SEARCH_HISTORY_KEY);
+    renderSearchHistory();
 }
 
 function getEntryHistory() {
-    try {
-        const parsed = JSON.parse(localStorage.getItem(ENTRY_HISTORY_KEY) || '[]');
-        return Array.isArray(parsed)
-            ? parsed.filter(item => item?.worldName && item?.uid).slice(0, MAX_ENTRY_HISTORY)
-            : [];
-    } catch {
-        return [];
-    }
-}
-
-function saveEntryHistory(history) {
-    localStorage.setItem(ENTRY_HISTORY_KEY, JSON.stringify(history.slice(0, MAX_ENTRY_HISTORY)));
+    return getJsonArray(ENTRY_HISTORY_KEY)
+        .filter(item => item?.worldName && item?.uid !== undefined)
+        .slice(0, MAX_ENTRY_HISTORY);
 }
 
 function addEntryHistory(result) {
@@ -399,49 +148,15 @@ function addEntryHistory(result) {
         title: normalizeText(result.title) || `UID ${result.uid}`,
         keys: normalizeArray(result.keys),
     };
-    const key = `${item.worldName}:${item.uid}`;
-    const next = [item, ...getEntryHistory().filter(historyItem => `${historyItem.worldName}:${historyItem.uid}` !== key)];
-    saveEntryHistory(next);
+    const id = `${item.worldName}:${item.uid}`;
+    const next = [item, ...getEntryHistory().filter(row => `${row.worldName}:${row.uid}` !== id)];
+    saveJsonArray(ENTRY_HISTORY_KEY, next, MAX_ENTRY_HISTORY);
     renderEntryHistory();
 }
 
 function clearEntryHistory() {
     localStorage.removeItem(ENTRY_HISTORY_KEY);
     renderEntryHistory();
-}
-
-function toastInfo(message) {
-    globalThis.toastr?.info?.(message, 'Worldbook Entry Search');
-}
-
-function toastSuccess(message) {
-    globalThis.toastr?.success?.(message, 'Worldbook Entry Search');
-}
-
-function toastError(message) {
-    globalThis.toastr?.error?.(message, 'Worldbook Entry Search');
-}
-
-function findEntryInData(data, uid) {
-    const uidString = String(uid);
-    const direct = data?.entries?.[uidString];
-    if (direct) {
-        return direct;
-    }
-
-    return Object.values(data?.entries ?? {}).find(entry => String(entry?.uid) === uidString) ?? null;
-}
-
-async function toggleWorldEntry(worldName, uid) {
-    const data = await loadWorldInfo(worldName);
-    const entry = findEntryInData(data, uid);
-    if (!entry) {
-        throw new Error(`没有找到 UID ${uid}`);
-    }
-
-    entry.disable = !entry.disable;
-    await saveWorldInfo(worldName, data, true);
-    return entry;
 }
 
 function getActiveWorldNames() {
@@ -456,9 +171,7 @@ function getActiveWorldNames() {
         }
     };
 
-    for (const name of selected_world_info ?? []) {
-        addName(name);
-    }
+    for (const name of selected_world_info ?? []) addName(name);
 
     addName(context.chatMetadata?.[METADATA_KEY]);
 
@@ -469,9 +182,7 @@ function getActiveWorldNames() {
     const avatarBase = character?.avatar ? character.avatar.replace(/\.[^/.]+$/, '') : '';
     const charLore = Array.isArray(world_info?.charLore) ? world_info.charLore : [];
     const charLoreEntry = charLore.find(item => item?.name === avatarBase || item?.name === character?.avatar || item?.name === character?.name);
-    for (const name of charLoreEntry?.extraBooks ?? []) {
-        addName(name);
-    }
+    for (const name of charLoreEntry?.extraBooks ?? []) addName(name);
 
     $('#world_info').find(':selected').each((_, option) => {
         addName(option.textContent);
@@ -482,22 +193,17 @@ function getActiveWorldNames() {
 }
 
 async function collectEntries() {
-    const worldNames = getActiveWorldNames();
     const rows = [];
-
-    for (const worldName of worldNames) {
+    for (const worldName of getActiveWorldNames()) {
         try {
             const data = await loadWorldInfo(worldName);
-            const entries = data?.entries ?? {};
-            for (const [fallbackUid, entry] of Object.entries(entries)) {
+            for (const [fallbackUid, entry] of Object.entries(data?.entries ?? {})) {
                 const uid = entry?.uid ?? fallbackUid;
                 const keys = normalizeArray(entry?.key);
-                const title = normalizeText(entry?.comment) || keys[0] || `UID ${uid}`;
-
                 rows.push({
-                    uid: String(uid),
                     worldName,
-                    title,
+                    uid: String(uid),
+                    title: normalizeText(entry?.comment) || keys[0] || `UID ${uid}`,
                     keys,
                     entry,
                 });
@@ -506,7 +212,6 @@ async function collectEntries() {
             console.warn(`[${EXTENSION_ID}] Failed to load worldbook "${worldName}".`, error);
         }
     }
-
     return rows;
 }
 
@@ -516,10 +221,7 @@ function rankEntry(row, query) {
     const keys = row.keys.map(key => key.toLowerCase());
     const titleHit = title.includes(needle);
     const keyHit = keys.some(key => key.includes(needle));
-
-    if (!titleHit && !keyHit) {
-        return null;
-    }
+    if (!titleHit && !keyHit) return null;
 
     let score = 0;
     if (title === needle) score += 100;
@@ -534,31 +236,31 @@ function rankEntry(row, query) {
 
 async function runSearch(query) {
     const cleaned = normalizeText(query);
-    const searchId = ++state.lastSearchId;
+    const searchId = ++state.searchId;
 
     state.query = cleaned;
     state.results = [];
     state.status = '';
 
     if (!cleaned) {
-        state.isLoading = false;
+        state.loading = false;
         renderResults();
         return;
     }
 
     const activeWorlds = getActiveWorldNames();
     if (!activeWorlds.length) {
-        state.isLoading = false;
+        state.loading = false;
         state.status = '当前没有检测到启用的世界书。';
         renderResults();
         return;
     }
 
-    state.isLoading = true;
+    state.loading = true;
     renderResults();
 
     const entries = await collectEntries();
-    if (searchId !== state.lastSearchId) return;
+    if (searchId !== state.searchId) return;
 
     state.results = entries
         .map(row => rankEntry(row, cleaned))
@@ -566,194 +268,62 @@ async function runSearch(query) {
         .sort((a, b) => b.score - a.score || a.worldName.localeCompare(b.worldName) || a.title.localeCompare(b.title))
         .slice(0, MAX_RESULTS);
 
-    state.isLoading = false;
+    state.loading = false;
     state.status = state.results.length ? '' : '没有找到匹配的小条目。';
     renderResults();
 }
 
 const debouncedSearch = debounce(runSearch, SEARCH_DELAY);
 
-function hideSillyTavernOptionsMenu() {
-    try {
-        $('#options').hide();
-    } catch {
-        const options = document.getElementById('options');
-        if (options instanceof HTMLElement) {
-            options.style.display = 'none';
-        }
-    }
+function findEntryInData(data, uid) {
+    const uidString = String(uid);
+    return data?.entries?.[uidString]
+        ?? Object.values(data?.entries ?? {}).find(entry => String(entry?.uid) === uidString)
+        ?? null;
 }
 
-function ensurePanelReady() {
-    if (!hasCompletePanelElements()) {
-        rebuildUi();
-    }
-    return hasCompletePanelElements();
+async function toggleWorldEntry(worldName, uid) {
+    const data = await loadWorldInfo(worldName);
+    const entry = findEntryInData(data, uid);
+    if (!entry) throw new Error(`没有找到 UID ${uid}`);
+    entry.disable = !entry.disable;
+    await saveWorldInfo(worldName, data, true);
+    return entry;
 }
 
-function showPanel() {
-    state.isOpen = true;
-    if (!ensurePanelReady()) {
-        console.error(`[${EXTENSION_ID}] Search panel could not be created. Missing:`, getMissingPanelElements());
-        toastError('搜索面板创建失败，请刷新页面后重试。');
-        showDebugWindow('搜索面板创建失败');
-        return;
+function getPerPage() {
+    const stored = Number(accountStorage.getItem(WI_PER_PAGE_KEY));
+    if (Number.isFinite(stored) && stored > 0) return stored;
+
+    const select = document.querySelector('#world_info_pagination select');
+    if (select instanceof HTMLSelectElement) {
+        const value = Number(select.value);
+        if (Number.isFinite(value) && value > 0) return value;
     }
 
-    forceBackdropVisible();
-
-    if (isMobileViewport()) {
-        if (document.activeElement instanceof HTMLElement) {
-            document.activeElement.blur();
-        }
-    } else {
-        try {
-            elements.input.focus({ preventScroll: true });
-        } catch {
-            elements.input.focus();
-        }
-    }
-
-    renderHistory();
-    renderEntryHistory();
-    renderResults();
+    return DEFAULT_PER_PAGE;
 }
 
-function hidePanel() {
-    state.isOpen = false;
-    if (!elements.backdrop) {
-        bindPanelElements();
-    }
-    if (elements.backdrop instanceof HTMLElement) {
-        elements.backdrop.classList.remove('wbes-open');
-        elements.backdrop.hidden = true;
-        elements.backdrop.setAttribute('hidden', '');
-        elements.backdrop.style.display = 'none';
-        elements.backdrop.style.visibility = '';
-        elements.backdrop.style.opacity = '';
-        elements.backdrop.style.zIndex = '';
-    }
+async function calculateEntryPage(worldName, uid) {
+    const data = await loadWorldInfo(worldName);
+    const entries = Object.entries(data?.entries ?? {}).map(([fallbackUid, source]) => {
+        if (!source || typeof source !== 'object' || Array.isArray(source)) return null;
+        return {
+            ...source,
+            uid: Number(source.uid ?? fallbackUid),
+            displayIndex: source.displayIndex ?? Number(source.uid ?? fallbackUid),
+            order: Number(source.order ?? 100),
+            key: normalizeArray(source.key),
+            keysecondary: normalizeArray(source.keysecondary),
+        };
+    }).filter(Boolean);
+
+    const sorted = sortWorldInfoEntries(entries);
+    const index = sorted.findIndex(entry => Number(entry.uid) === Number(uid));
+    return index < 0 ? null : Math.floor(index / getPerPage()) + 1;
 }
 
-function openPanelFromLauncher(event) {
-    event?.preventDefault?.();
-    event?.stopPropagation?.();
-
-    const now = Date.now();
-    if (now - lastLauncherOpenAt < 350) {
-        return;
-    }
-
-    lastLauncherOpenAt = now;
-    hideSillyTavernOptionsMenu();
-    showPanel();
-    setTimeout(() => {
-        if (!isPanelVisible()) {
-            showDebugWindow('点击入口后面板未显示');
-        }
-    }, 100);
-}
-
-function renderHistory() {
-    if (!elements.history || !elements.clearHistory) return;
-
-    const history = getHistory();
-    elements.history.innerHTML = history.length
-        ? history.map(item => `<button type="button" class="wbes-history-item" data-query="${escapeHtml(item)}">${escapeHtml(item)}</button>`).join('')
-        : '<div class="wbes-muted">暂无搜索历史</div>';
-    elements.clearHistory.disabled = history.length === 0;
-}
-
-async function renderEntryHistory() {
-    if (!elements.entryHistory || !elements.clearEntryHistory) return;
-
-    const history = getEntryHistory();
-    elements.entryHistory.innerHTML = history.length
-        ? history.map((item, index) => `
-            <div class="wbes-entry-history-item" data-index="${index}">
-                <button type="button" class="wbes-entry-history-main" data-action="open" title="打开并定位">
-                    <span class="wbes-entry-history-title">${escapeHtml(item.title || `UID ${item.uid}`)}</span>
-                    <span class="wbes-entry-history-meta">${escapeHtml(item.worldName)} · UID ${escapeHtml(item.uid)}</span>
-                </button>
-                <button type="button" class="wbes-entry-toggle menu_button" data-action="toggle" title="启用或禁用该条目">...</button>
-            </div>
-        `).join('')
-        : '<div class="wbes-muted">暂无条目历史</div>';
-    elements.clearEntryHistory.disabled = history.length === 0;
-
-    await refreshEntryHistoryStatuses();
-}
-
-async function refreshEntryHistoryStatuses() {
-    const history = getEntryHistory();
-    await Promise.all(history.map(async (item, index) => {
-        const button = elements.entryHistory?.querySelector(`.wbes-entry-history-item[data-index="${index}"] .wbes-entry-toggle`);
-        if (!(button instanceof HTMLButtonElement)) return;
-
-        try {
-            const data = await loadWorldInfo(item.worldName);
-            const entry = findEntryInData(data, item.uid);
-            if (!entry) {
-                button.textContent = '缺失';
-                button.disabled = true;
-                return;
-            }
-
-            const enabled = !entry.disable;
-            button.textContent = enabled ? '启用' : '禁用';
-            button.classList.toggle('wbes-entry-enabled', enabled);
-            button.classList.toggle('wbes-entry-disabled', !enabled);
-        } catch (error) {
-            console.warn(`[${EXTENSION_ID}] Failed to refresh entry status.`, item, error);
-            button.textContent = '错误';
-            button.disabled = true;
-        }
-    }));
-}
-
-function renderResults() {
-    if (!elements.results) return;
-
-    const activeCount = document.getElementById('wbes-active-count');
-    if (activeCount) {
-        activeCount.textContent = `${getActiveWorldNames().length} 本启用`;
-    }
-
-    if (state.isLoading) {
-        elements.results.innerHTML = '<div class="wbes-muted">搜索中...</div>';
-        return;
-    }
-
-    if (state.status) {
-        elements.results.innerHTML = `<div class="wbes-muted">${escapeHtml(state.status)}</div>`;
-        return;
-    }
-
-    if (!state.query) {
-        elements.results.innerHTML = '<div class="wbes-muted">输入条目标题或关键词开始搜索。</div>';
-        return;
-    }
-
-    elements.results.innerHTML = state.results.map((row, index) => {
-        const keys = row.keys.length ? row.keys.slice(0, 8).join(', ') : '无关键词';
-        const matchLabel = row.matchType === 'title' ? '标题命中' : '关键词命中';
-        const enabled = !row.entry?.disable;
-        const toggleClass = enabled ? 'wbes-entry-enabled' : 'wbes-entry-disabled';
-        const toggleLabel = enabled ? '启用' : '禁用';
-        return `
-            <div class="wbes-result" data-index="${index}">
-                <button type="button" class="wbes-result-main" data-action="open">
-                    <span class="wbes-result-title">${escapeHtml(row.title)}</span>
-                    <span class="wbes-result-meta">${escapeHtml(row.worldName)} · UID ${escapeHtml(row.uid)} · ${matchLabel}</span>
-                    <span class="wbes-result-keys">${escapeHtml(keys)}</span>
-                </button>
-                <button type="button" class="wbes-result-toggle menu_button ${toggleClass}" data-action="toggle" title="启用或禁用该条目">${toggleLabel}</button>
-            </div>
-        `;
-    }).join('');
-}
-
-async function waitForElement(selector, timeout = 3000) {
+async function waitForElement(selector, timeout = 4000) {
     const started = Date.now();
     while (Date.now() - started < timeout) {
         const element = document.querySelector(selector);
@@ -763,54 +333,22 @@ async function waitForElement(selector, timeout = 3000) {
     return null;
 }
 
-function getPerPage() {
-    const fromAccountStorage = Number(accountStorage.getItem(WI_PER_PAGE_KEY));
-    if (Number.isFinite(fromAccountStorage) && fromAccountStorage > 0) {
-        return fromAccountStorage;
-    }
-
-    const sizeChanger = document.querySelector('#world_info_pagination select');
-    if (sizeChanger instanceof HTMLSelectElement) {
-        const fromSelect = Number(sizeChanger.value);
-        if (Number.isFinite(fromSelect) && fromSelect > 0) {
-            return fromSelect;
+async function jumpToEntryPage(result) {
+    try {
+        const page = await calculateEntryPage(result.worldName, result.uid);
+        const pagination = $('#world_info_pagination');
+        if (page && pagination.length && typeof pagination.pagination === 'function') {
+            pagination.pagination('go', page);
+            await delay(150);
+            return page;
         }
+    } catch (error) {
+        console.warn(`[${EXTENSION_ID}] Failed to jump to entry page.`, error);
     }
-
-    return WI_PER_PAGE_DEFAULT;
+    return null;
 }
 
-async function calculateEntryPage(worldName, uid) {
-    const data = await loadWorldInfo(worldName);
-    const entries = Object.keys(data?.entries ?? {})
-        .map(entryUid => {
-            const source = data.entries[entryUid];
-            if (!source || typeof source !== 'object' || Array.isArray(source)) {
-                return null;
-            }
-
-            const entry = { ...source };
-            entry.uid = Number(entry.uid ?? entryUid);
-            entry.displayIndex = entry.displayIndex ?? entry.uid;
-            entry.order = Number(entry.order ?? 100);
-            entry.key = normalizeArray(entry.key);
-            entry.keysecondary = normalizeArray(entry.keysecondary);
-            return entry;
-        })
-        .filter(Boolean);
-
-    const sortedEntries = sortWorldInfoEntries(entries);
-    const uidNumber = Number(uid);
-    const uidIndex = sortedEntries.findIndex(entry => Number(entry.uid) === uidNumber);
-
-    if (uidIndex < 0) {
-        return null;
-    }
-
-    return Math.floor(uidIndex / getPerPage()) + 1;
-}
-
-async function waitForEntryElement(uid, timeout = 4000) {
+async function waitForEntryElement(uid, timeout = 4500) {
     const escapedUid = CSS.escape(String(uid));
     const selectors = [
         `.world_entry[data-uid="${escapedUid}"]`,
@@ -826,59 +364,48 @@ async function waitForEntryElement(uid, timeout = 4000) {
     while (Date.now() - started < timeout) {
         for (const selector of selectors) {
             const target = document.querySelector(selector);
-            if (target) {
-                return target;
-            }
+            if (target) return target;
         }
         await delay(80);
     }
-
     return null;
 }
 
-async function jumpToEntryPage(result) {
-    try {
-        const page = await calculateEntryPage(result.worldName, result.uid);
-        const pagination = $('#world_info_pagination');
-
-        if (page && pagination.length && typeof pagination.pagination === 'function') {
-            pagination.pagination('go', page);
-            await delay(120);
-            return page;
-        }
-    } catch (error) {
-        console.warn(`[${EXTENSION_ID}] Failed to calculate or jump to entry page.`, error);
-    }
-
-    return null;
-}
-
-function expandAndHighlightEntry(target, result, page) {
+function highlightEntry(target, result, page) {
     const container = target?.closest?.('.world_entry, .inline-drawer, .world_entry_form') ?? target;
-    if (!(container instanceof HTMLElement)) {
-        return false;
-    }
+    if (!(container instanceof HTMLElement)) return false;
 
     const toggle = container.querySelector('.inline-drawer-toggle, .inline-drawer-icon');
     const content = container.querySelector('.inline-drawer-content, .world_entry_edit');
-    if (toggle && content && window.getComputedStyle(content).display === 'none') {
+    if (toggle && content && getComputedStyle(content).display === 'none') {
         toggle.dispatchEvent(new MouseEvent('click', { bubbles: true }));
     }
 
     container.scrollIntoView({ behavior: 'smooth', block: 'center' });
     container.classList.add('wbes-entry-highlight');
     setTimeout(() => container.classList.remove('wbes-entry-highlight'), 2600);
-
-    const pageText = page ? `第 ${page} 页` : '当前页';
-    toastSuccess(`已定位到 ${pageText}：${result.title}`);
+    toastSuccess(`已定位到${page ? `第 ${page} 页` : '当前页'}：${result.title}`);
     return true;
+}
+
+async function locateResult(result) {
+    closePanel();
+    openWorldInfoEditor(result.worldName);
+
+    await waitForElement('#world_popup_entries_list, #world_info_entries, #WorldInfo');
+    const page = await jumpToEntryPage(result);
+    const target = await waitForEntryElement(result.uid);
+
+    if (!highlightEntry(target, result, page)) {
+        const pageText = page ? `第 ${page} 页` : '对应页面';
+        toastInfo(`已打开世界书 "${result.worldName}" 的${pageText}，请查找：${result.title} / UID ${result.uid}`);
+    }
 }
 
 async function openResult(index) {
     const result = state.results[index];
     if (!result) return;
-
-    addHistory(state.query || result.title);
+    addSearchHistory(state.query || result.title);
     addEntryHistory(result);
     await locateResult(result);
 }
@@ -902,25 +429,6 @@ async function openEntryHistoryItem(index) {
     await locateResult(result);
 }
 
-async function toggleEntryHistoryItem(index) {
-    const item = getEntryHistory()[index];
-    if (!item) return;
-
-    try {
-        const entry = await toggleWorldEntry(item.worldName, item.uid);
-        toastSuccess(`${entry.disable ? '已禁用' : '已启用'}：${normalizeText(entry.comment) || item.title || item.uid}`);
-        await renderEntryHistory();
-
-        const currentWorldName = $('#world_editor_select option:selected').text();
-        if (currentWorldName === item.worldName) {
-            getContext().reloadWorldInfoEditor?.(item.worldName);
-        }
-    } catch (error) {
-        console.error(`[${EXTENSION_ID}] Failed to toggle entry.`, item, error);
-        toastError(`切换条目状态失败：${error?.message ?? error}`);
-    }
-}
-
 async function toggleSearchResult(index) {
     const result = state.results[index];
     if (!result) return;
@@ -930,98 +438,143 @@ async function toggleSearchResult(index) {
         result.entry = entry;
         result.title = normalizeText(entry.comment) || result.title;
         result.keys = normalizeArray(entry.key);
-
         toastSuccess(`${entry.disable ? '已禁用' : '已启用'}：${result.title}`);
         addEntryHistory(result);
         renderResults();
         await renderEntryHistory();
-
-        const currentWorldName = $('#world_editor_select option:selected').text();
-        if (currentWorldName === result.worldName) {
-            getContext().reloadWorldInfoEditor?.(result.worldName);
-        }
+        reloadCurrentWorldEditor(result.worldName);
     } catch (error) {
-        console.error(`[${EXTENSION_ID}] Failed to toggle search result.`, result, error);
         toastError(`切换条目状态失败：${error?.message ?? error}`);
     }
 }
 
-async function locateResult(result) {
-    hidePanel();
-    openWorldInfoEditor(result.worldName);
+async function toggleEntryHistoryItem(index) {
+    const item = getEntryHistory()[index];
+    if (!item) return;
 
-    await waitForElement('#world_popup_entries_list, #world_info_entries, #WorldInfo');
-    const page = await jumpToEntryPage(result);
-    const target = await waitForEntryElement(result.uid);
-
-    if (expandAndHighlightEntry(target, result, page)) {
-        return;
+    try {
+        const entry = await toggleWorldEntry(item.worldName, item.uid);
+        toastSuccess(`${entry.disable ? '已禁用' : '已启用'}：${normalizeText(entry.comment) || item.title || item.uid}`);
+        await renderEntryHistory();
+        reloadCurrentWorldEditor(item.worldName);
+    } catch (error) {
+        toastError(`切换条目状态失败：${error?.message ?? error}`);
     }
-
-    console.info(`[${EXTENSION_ID}] Entry opened at worldbook level; could not locate UID in editor DOM.`, result);
-    const pageText = page ? `第 ${page} 页` : '对应页面';
-    toastInfo(`已打开世界书 "${result.worldName}" 的${pageText}。请查找条目：${result.title} / UID ${result.uid}`);
 }
 
-function createLauncher() {
-    const launcher = document.createElement('div');
-    launcher.id = 'wbes-launcher';
-    launcher.className = 'list-group-item flex-container flexGap5 interactable';
-    launcher.tabIndex = 0;
-    launcher.title = '搜索当前启用世界书的小条目';
-    launcher.innerHTML = '<i class="fa-solid fa-book-open"></i><span>世界书搜索</span>';
-    launcher.addEventListener('click', openPanelFromLauncher);
-    launcher.addEventListener('keydown', event => {
-        if (event.key === 'Enter' || event.key === ' ') {
-            openPanelFromLauncher(event);
+function reloadCurrentWorldEditor(worldName) {
+    const currentWorldName = $('#world_editor_select option:selected').text();
+    if (currentWorldName === worldName) {
+        getContext().reloadWorldInfoEditor?.(worldName);
+    }
+}
+
+function renderSearchHistory() {
+    if (!ui.history || !ui.clearHistory) return;
+    const history = getSearchHistory();
+    ui.history.innerHTML = history.length
+        ? history.map(item => `<button type="button" class="wbes-chip" data-query="${escapeHtml(item)}">${escapeHtml(item)}</button>`).join('')
+        : '<div class="wbes-empty">暂无搜索历史</div>';
+    ui.clearHistory.disabled = history.length === 0;
+}
+
+async function renderEntryHistory() {
+    if (!ui.entryHistory || !ui.clearEntryHistory) return;
+    const history = getEntryHistory();
+    ui.entryHistory.innerHTML = history.length
+        ? history.map((item, index) => `
+            <div class="wbes-entry-history-row" data-index="${index}">
+                <button type="button" class="wbes-entry-main" data-action="open">
+                    <span>${escapeHtml(item.title || `UID ${item.uid}`)}</span>
+                    <small>${escapeHtml(item.worldName)} · UID ${escapeHtml(item.uid)}</small>
+                </button>
+                <button type="button" class="wbes-toggle menu_button" data-action="toggle">...</button>
+            </div>
+        `).join('')
+        : '<div class="wbes-empty">暂无最近条目</div>';
+    ui.clearEntryHistory.disabled = history.length === 0;
+    await refreshEntryHistoryStatus();
+}
+
+async function refreshEntryHistoryStatus() {
+    const history = getEntryHistory();
+    await Promise.all(history.map(async (item, index) => {
+        const button = ui.entryHistory?.querySelector(`.wbes-entry-history-row[data-index="${index}"] .wbes-toggle`);
+        if (!(button instanceof HTMLButtonElement)) return;
+
+        try {
+            const data = await loadWorldInfo(item.worldName);
+            const entry = findEntryInData(data, item.uid);
+            if (!entry) {
+                button.textContent = '缺失';
+                button.disabled = true;
+                return;
+            }
+            const enabled = !entry.disable;
+            button.textContent = enabled ? '启用' : '禁用';
+            button.classList.toggle('wbes-enabled', enabled);
+            button.classList.toggle('wbes-disabled', !enabled);
+        } catch {
+            button.textContent = '错误';
+            button.disabled = true;
         }
-    });
-    return launcher;
+    }));
 }
 
-function createFloatingLauncher() {
-    const launcher = document.createElement('button');
-    launcher.id = FLOATING_LAUNCHER_ID;
-    launcher.type = 'button';
-    launcher.className = 'menu_button menu_button_icon';
-    launcher.title = '世界书搜索';
-    launcher.innerHTML = '<i class="fa-solid fa-book-open"></i><span>世界书搜索</span>';
-    launcher.addEventListener('click', openPanelFromLauncher);
-    return launcher;
-}
+function renderResults() {
+    if (!ui.results) return;
+    if (ui.activeCount) ui.activeCount.textContent = `${getActiveWorldNames().length} 本启用`;
 
-function mountLauncher(launcher) {
-    const optionsContent = document.querySelector('#options .options-content');
-    const extensionsMenu = document.getElementById('extensionsMenu');
-
-    if (optionsContent) {
-        optionsContent.appendChild(launcher);
+    if (state.loading) {
+        ui.results.innerHTML = '<div class="wbes-empty">搜索中...</div>';
         return;
     }
 
-    if (extensionsMenu) {
-        extensionsMenu.appendChild(launcher);
+    if (state.status) {
+        ui.results.innerHTML = `<div class="wbes-empty">${escapeHtml(state.status)}</div>`;
         return;
     }
 
-    document.body.appendChild(launcher);
-}
-
-function mountFloatingLauncher() {
-    const existing = document.getElementById(FLOATING_LAUNCHER_ID);
-    if (existing) {
+    if (!state.query) {
+        ui.results.innerHTML = '<div class="wbes-empty">输入标题或关键词开始搜索。</div>';
         return;
     }
 
-    document.body.appendChild(createFloatingLauncher());
+    ui.results.innerHTML = state.results.map((row, index) => {
+        const keys = row.keys.length ? row.keys.slice(0, 8).join(', ') : '无关键词';
+        const matchLabel = row.matchType === 'title' ? '标题命中' : '关键词命中';
+        const enabled = !row.entry?.disable;
+        return `
+            <div class="wbes-result" data-index="${index}">
+                <button type="button" class="wbes-result-main" data-action="open">
+                    <span class="wbes-result-title">${escapeHtml(row.title)}</span>
+                    <span class="wbes-result-meta">${escapeHtml(row.worldName)} · UID ${escapeHtml(row.uid)} · ${matchLabel}</span>
+                    <span class="wbes-result-keys">${escapeHtml(keys)}</span>
+                </button>
+                <button type="button" class="wbes-toggle menu_button ${enabled ? 'wbes-enabled' : 'wbes-disabled'}" data-action="toggle">${enabled ? '启用' : '禁用'}</button>
+            </div>
+        `;
+    }).join('');
 }
 
-function createBackdrop() {
-    const backdrop = document.createElement('div');
-    backdrop.id = 'wbes-backdrop';
-    backdrop.hidden = true;
-    backdrop.style.display = 'none';
-    backdrop.innerHTML = `
+function closePanel() {
+    document.getElementById('wbes-shell')?.remove();
+    ui.shell = null;
+    ui.input = null;
+    ui.results = null;
+    ui.history = null;
+    ui.entryHistory = null;
+    ui.activeCount = null;
+    ui.clearHistory = null;
+    ui.clearEntryHistory = null;
+}
+
+function createPanel() {
+    closePanel();
+
+    const shell = document.createElement('div');
+    shell.id = 'wbes-shell';
+    shell.innerHTML = `
         <section id="wbes-panel" role="dialog" aria-modal="true" aria-label="世界书条目搜索">
             <header class="wbes-header">
                 <h3>世界书条目搜索</h3>
@@ -1029,75 +582,85 @@ function createBackdrop() {
                     <i class="fa-solid fa-xmark"></i>
                 </button>
             </header>
-            <div class="wbes-search-row">
+            <label class="wbes-search">
                 <i class="fa-solid fa-magnifying-glass"></i>
                 <input id="wbes-input" class="text_pole" type="search" autocomplete="off" placeholder="搜索条目标题或关键词">
-            </div>
-            <div class="wbes-body">
-                <aside class="wbes-history">
+            </label>
+            <div class="wbes-layout">
+                <aside class="wbes-side">
                     <div class="wbes-section-title">
                         <span>搜索历史</span>
-                        <button type="button" id="wbes-clear-history" class="menu_button" title="清空搜索历史">清空</button>
+                        <button type="button" class="menu_button" id="wbes-clear-history">清空</button>
                     </div>
-                    <div id="wbes-history-list"></div>
-                    <div class="wbes-section-title wbes-entry-history-titlebar">
+                    <div id="wbes-history"></div>
+                    <div class="wbes-section-title">
                         <span>最近条目</span>
-                        <button type="button" id="wbes-clear-entry-history" class="menu_button" title="清空条目历史">清空</button>
+                        <button type="button" class="menu_button" id="wbes-clear-entry-history">清空</button>
                     </div>
-                    <div id="wbes-entry-history-list"></div>
+                    <div id="wbes-entry-history"></div>
                 </aside>
-                <main class="wbes-results">
+                <main class="wbes-main">
                     <div class="wbes-section-title">
                         <span>结果</span>
                         <span id="wbes-active-count"></span>
                     </div>
-                    <div id="wbes-results-list"></div>
+                    <div id="wbes-results"></div>
                 </main>
             </div>
         </section>
     `;
-    document.body.appendChild(backdrop);
-    return backdrop;
+
+    document.body.appendChild(shell);
+    ui.shell = shell;
+    ui.input = document.getElementById('wbes-input');
+    ui.results = document.getElementById('wbes-results');
+    ui.history = document.getElementById('wbes-history');
+    ui.entryHistory = document.getElementById('wbes-entry-history');
+    ui.activeCount = document.getElementById('wbes-active-count');
+    ui.clearHistory = document.getElementById('wbes-clear-history');
+    ui.clearEntryHistory = document.getElementById('wbes-clear-entry-history');
+
+    bindPanelEvents(shell);
+    renderSearchHistory();
+    renderEntryHistory();
+    renderResults();
 }
 
-function bindPanelEvents(backdrop) {
-    document.getElementById('wbes-close')?.addEventListener('click', hidePanel);
-    elements.clearHistory?.addEventListener('click', clearHistory);
-    elements.clearEntryHistory?.addEventListener('click', clearEntryHistory);
+function bindPanelEvents(shell) {
+    document.getElementById('wbes-close')?.addEventListener('click', closePanel);
 
-    backdrop.addEventListener('click', event => {
-        if (event.target === backdrop) hidePanel();
+    shell.addEventListener('click', event => {
+        if (event.target === shell) closePanel();
     });
 
-    elements.input?.addEventListener('input', event => {
-        if (event.target instanceof HTMLInputElement) {
-            debouncedSearch(event.target.value);
-        }
+    ui.input?.addEventListener('input', event => {
+        if (event.target instanceof HTMLInputElement) debouncedSearch(event.target.value);
     });
 
-    elements.input?.addEventListener('keydown', event => {
-        if (event.key === 'Escape') hidePanel();
+    ui.input?.addEventListener('keydown', event => {
+        if (event.key === 'Escape') closePanel();
         if (event.key === 'Enter' && state.results.length) openResult(0);
     });
 
-    elements.history?.addEventListener('click', event => {
+    ui.clearHistory?.addEventListener('click', clearSearchHistory);
+    ui.clearEntryHistory?.addEventListener('click', clearEntryHistory);
+
+    ui.history?.addEventListener('click', event => {
         if (!(event.target instanceof Element)) return;
-        const button = event.target.closest('.wbes-history-item');
+        const button = event.target.closest('.wbes-chip');
         if (!(button instanceof HTMLElement)) return;
-        elements.input.value = button.dataset.query || '';
-        addHistory(elements.input.value);
-        runSearch(elements.input.value);
+        const query = button.dataset.query || '';
+        ui.input.value = query;
+        addSearchHistory(query);
+        runSearch(query);
     });
 
-    elements.entryHistory?.addEventListener('click', event => {
+    ui.entryHistory?.addEventListener('click', event => {
         if (!(event.target instanceof Element)) return;
-        const item = event.target.closest('.wbes-entry-history-item');
-        if (!(item instanceof HTMLElement)) return;
-
-        const index = Number(item.dataset.index);
-        const actionButton = event.target.closest('[data-action]');
-        const action = actionButton?.dataset?.action;
-
+        const row = event.target.closest('.wbes-entry-history-row');
+        if (!(row instanceof HTMLElement)) return;
+        const index = Number(row.dataset.index);
+        const action = event.target.closest('[data-action]')?.dataset?.action;
         if (action === 'toggle') {
             toggleEntryHistoryItem(index);
         } else {
@@ -1105,15 +668,12 @@ function bindPanelEvents(backdrop) {
         }
     });
 
-    elements.results?.addEventListener('click', event => {
+    ui.results?.addEventListener('click', event => {
         if (!(event.target instanceof Element)) return;
-        const item = event.target.closest('.wbes-result');
-        if (!(item instanceof HTMLElement)) return;
-
-        const index = Number(item.dataset.index);
-        const actionButton = event.target.closest('[data-action]');
-        const action = actionButton?.dataset?.action;
-
+        const row = event.target.closest('.wbes-result');
+        if (!(row instanceof HTMLElement)) return;
+        const index = Number(row.dataset.index);
+        const action = event.target.closest('[data-action]')?.dataset?.action;
         if (action === 'toggle') {
             toggleSearchResult(index);
         } else {
@@ -1122,87 +682,77 @@ function bindPanelEvents(backdrop) {
     });
 }
 
-function bindGlobalEvents() {
-    if (globalKeydownBound) return;
-    globalKeydownBound = true;
+function openPanel(event) {
+    event?.preventDefault?.();
+    event?.stopPropagation?.();
+
+    const now = Date.now();
+    if (now - lastOpenAt < 250) return;
+    lastOpenAt = now;
+
+    $('#options').hide();
+    createPanel();
+
+    if (isMobile()) {
+        document.activeElement instanceof HTMLElement && document.activeElement.blur();
+    } else {
+        ui.input?.focus({ preventScroll: true });
+    }
+}
+
+function createLauncher(id, className) {
+    const launcher = document.createElement('button');
+    launcher.id = id;
+    launcher.type = 'button';
+    launcher.className = className;
+    launcher.title = '世界书搜索';
+    launcher.innerHTML = '<i class="fa-solid fa-book-open"></i><span>世界书搜索</span>';
+    launcher.addEventListener('click', openPanel);
+    return launcher;
+}
+
+function mountLaunchers() {
+    const optionsContent = document.querySelector('#options .options-content');
+    if (optionsContent && !document.getElementById('wbes-menu-launcher')) {
+        const launcher = createLauncher('wbes-menu-launcher', 'list-group-item flex-container flexGap5 interactable');
+        optionsContent.appendChild(launcher);
+    }
+
+    if (!document.getElementById('wbes-float-launcher')) {
+        const launcher = createLauncher('wbes-float-launcher', 'menu_button');
+        document.body.appendChild(launcher);
+    }
+}
+
+function bindGlobalKeyboard() {
+    if (keyboardBound) return;
+    keyboardBound = true;
 
     document.addEventListener('keydown', event => {
-        if (event.key === 'Escape' && state.isOpen) hidePanel();
+        if (event.key === 'Escape' && ui.shell) closePanel();
         if ((event.ctrlKey || event.metaKey) && event.shiftKey && event.key.toLowerCase() === 'w') {
-            event.preventDefault();
-            showPanel();
+            openPanel(event);
         }
     });
 }
 
-function rebuildUi() {
-    removeExistingUi();
-
-    const launcher = createLauncher();
-    mountLauncher(launcher);
-    mountFloatingLauncher();
-
-    const backdrop = createBackdrop();
-    bindPanelElements();
-    bindPanelEvents(backdrop);
-    bindGlobalEvents();
-
-    cleanupHistory();
-    renderHistory();
-    renderEntryHistory();
-    renderResults();
+function observeMenu() {
+    if (mutationObserver) return;
+    mutationObserver = new MutationObserver(() => mountLaunchers());
+    mutationObserver.observe(document.body, { childList: true, subtree: true });
 }
 
-function buildUi() {
-    const existingLauncher = document.getElementById('wbes-launcher');
-    const existingFloatingLauncher = document.getElementById(FLOATING_LAUNCHER_ID);
-    const existingBackdrop = document.getElementById('wbes-backdrop');
-
-    if (existingLauncher && existingBackdrop && hasCompletePanelElements()) {
-        const optionsContent = document.querySelector('#options .options-content');
-        if (optionsContent && existingLauncher.parentElement !== optionsContent) {
-            optionsContent.appendChild(existingLauncher);
-        }
-        if (!existingFloatingLauncher) {
-            mountFloatingLauncher();
-        }
-        bindGlobalEvents();
-        cleanupHistory();
-        renderHistory();
-        renderEntryHistory();
-        renderResults();
-        return;
-    }
-
-    rebuildUi();
-}
-
-function scheduleLauncherRemounts() {
-    const remount = () => {
-        const launcher = document.getElementById('wbes-launcher');
-        const optionsContent = document.querySelector('#options .options-content');
-        if (launcher && optionsContent && launcher.parentElement !== optionsContent) {
-            optionsContent.appendChild(launcher);
-        }
-        mountFloatingLauncher();
-    };
-
-    setTimeout(remount, 500);
-    setTimeout(remount, 1500);
-    setTimeout(remount, 3500);
-
-    const observer = new MutationObserver(() => remount());
-    observer.observe(document.body, { childList: true, subtree: true });
-}
-
-function openFromHashIfRequested() {
-    if (globalThis.location?.hash === '#wbes-open') {
-        setTimeout(() => showPanel(), 300);
-    }
+function cleanupSearchHistory() {
+    saveJsonArray(SEARCH_HISTORY_KEY, getSearchHistory(), MAX_HISTORY);
 }
 
 jQuery(async () => {
-    buildUi();
-    scheduleLauncherRemounts();
-    openFromHashIfRequested();
+    cleanupSearchHistory();
+    mountLaunchers();
+    bindGlobalKeyboard();
+    observeMenu();
+
+    if (location.hash === '#wbes-open') {
+        setTimeout(() => openPanel(), 300);
+    }
 });
