@@ -31,6 +31,7 @@ let state = {
 
 const elements = {};
 let lastLauncherOpenAt = 0;
+let lastDebugReason = '';
 
 function debounce(fn, wait) {
     let timeout = null;
@@ -87,9 +88,171 @@ function getMissingPanelElements() {
 function removeExistingUi() {
     document.getElementById('wbes-launcher')?.remove();
     document.getElementById('wbes-backdrop')?.remove();
+    document.getElementById('wbes-debug-window')?.remove();
     Object.keys(elements).forEach(key => {
         elements[key] = null;
     });
+}
+
+function isPanelVisible() {
+    const backdrop = document.getElementById('wbes-backdrop');
+    const panel = document.getElementById('wbes-panel');
+    if (!(backdrop instanceof HTMLElement) || !(panel instanceof HTMLElement)) {
+        return false;
+    }
+
+    const backdropStyle = getComputedStyle(backdrop);
+    const panelRect = panel.getBoundingClientRect();
+    return !backdrop.hidden
+        && backdrop.classList.contains('wbes-open')
+        && backdropStyle.display !== 'none'
+        && backdropStyle.visibility !== 'hidden'
+        && Number(backdropStyle.opacity || 1) > 0
+        && panelRect.width > 0
+        && panelRect.height > 0;
+}
+
+function collectDebugInfo(reason = lastDebugReason) {
+    const backdrop = document.getElementById('wbes-backdrop');
+    const panel = document.getElementById('wbes-panel');
+    const launcher = document.getElementById('wbes-launcher');
+    const backdropStyle = backdrop instanceof HTMLElement ? getComputedStyle(backdrop) : null;
+    const panelStyle = panel instanceof HTMLElement ? getComputedStyle(panel) : null;
+    const panelRect = panel instanceof HTMLElement ? panel.getBoundingClientRect() : null;
+
+    return {
+        reason,
+        extensionId: EXTENSION_ID,
+        timestamp: new Date().toISOString(),
+        isMobileViewport: isMobileViewport(),
+        viewport: {
+            innerWidth: globalThis.innerWidth,
+            innerHeight: globalThis.innerHeight,
+            visualViewportWidth: globalThis.visualViewport?.width ?? null,
+            visualViewportHeight: globalThis.visualViewport?.height ?? null,
+        },
+        state: {
+            isOpen: state.isOpen,
+            lastLauncherOpenAt,
+        },
+        elements: {
+            launcherExists: Boolean(launcher),
+            backdropExists: Boolean(backdrop),
+            panelExists: Boolean(panel),
+            missingPanelElements: getMissingPanelElements(),
+        },
+        backdrop: backdrop instanceof HTMLElement ? {
+            hidden: backdrop.hidden,
+            hasHiddenAttribute: backdrop.hasAttribute('hidden'),
+            className: backdrop.className,
+            inlineDisplay: backdrop.style.display,
+            computedDisplay: backdropStyle?.display,
+            computedVisibility: backdropStyle?.visibility,
+            computedOpacity: backdropStyle?.opacity,
+            computedZIndex: backdropStyle?.zIndex,
+        } : null,
+        panel: panel instanceof HTMLElement ? {
+            className: panel.className,
+            computedDisplay: panelStyle?.display,
+            computedVisibility: panelStyle?.visibility,
+            computedOpacity: panelStyle?.opacity,
+            rect: panelRect ? {
+                width: panelRect.width,
+                height: panelRect.height,
+                top: panelRect.top,
+                left: panelRect.left,
+            } : null,
+        } : null,
+        panelVisible: isPanelVisible(),
+    };
+}
+
+function forceOpenPanel() {
+    if (!hasCompletePanelElements()) {
+        buildUi();
+    }
+    bindPanelElements();
+
+    if (!(elements.backdrop instanceof HTMLElement)) {
+        showDebugWindow('强制打开失败：backdrop 不存在');
+        return;
+    }
+
+    elements.backdrop.hidden = false;
+    elements.backdrop.removeAttribute('hidden');
+    elements.backdrop.classList.add('wbes-open');
+    elements.backdrop.style.display = 'flex';
+    elements.backdrop.style.visibility = 'visible';
+    elements.backdrop.style.opacity = '1';
+    elements.backdrop.style.zIndex = '9999999';
+
+    renderHistory();
+    renderEntryHistory();
+    renderResults();
+}
+
+function rebuildAndOpenPanel() {
+    removeExistingUi();
+    buildUi();
+    showPanel();
+}
+
+async function copyDebugInfo() {
+    const info = JSON.stringify(collectDebugInfo('manual copy'), null, 2);
+    const output = document.getElementById('wbes-debug-output');
+    if (output instanceof HTMLTextAreaElement) {
+        output.value = info;
+        output.select();
+    }
+
+    try {
+        await navigator.clipboard.writeText(info);
+        toastSuccess('调试信息已复制');
+    } catch (error) {
+        console.warn(`[${EXTENSION_ID}] Clipboard copy failed.`, error);
+        toastInfo('复制失败，已显示在文本框里，请手动复制');
+    }
+}
+
+function showDebugWindow(reason = '面板未显示') {
+    lastDebugReason = reason;
+    const existing = document.getElementById('wbes-debug-window');
+    if (existing) {
+        existing.remove();
+    }
+
+    const info = collectDebugInfo(reason);
+    const windowElement = document.createElement('div');
+    windowElement.id = 'wbes-debug-window';
+    windowElement.innerHTML = `
+        <div class="wbes-debug-card">
+            <div class="wbes-debug-header">
+                <strong>世界书搜索诊断</strong>
+                <button type="button" class="menu_button menu_button_icon" id="wbes-debug-close" title="关闭">
+                    <i class="fa-solid fa-xmark"></i>
+                </button>
+            </div>
+            <div class="wbes-debug-summary">
+                <div>原因：${escapeHtml(reason)}</div>
+                <div>面板可见：${info.panelVisible ? '是' : '否'}</div>
+                <div>手机视图：${info.isMobileViewport ? '是' : '否'} · ${info.viewport.innerWidth}x${info.viewport.innerHeight}</div>
+                <div>缺失元素：${escapeHtml(info.elements.missingPanelElements.join(', ') || '无')}</div>
+                <div>backdrop：${info.elements.backdropExists ? '存在' : '不存在'} · panel：${info.elements.panelExists ? '存在' : '不存在'}</div>
+            </div>
+            <div class="wbes-debug-actions">
+                <button type="button" class="menu_button" id="wbes-debug-force">强制打开</button>
+                <button type="button" class="menu_button" id="wbes-debug-rebuild">重建面板</button>
+                <button type="button" class="menu_button" id="wbes-debug-copy">复制信息</button>
+            </div>
+            <textarea id="wbes-debug-output" readonly>${escapeHtml(JSON.stringify(info, null, 2))}</textarea>
+        </div>
+    `;
+
+    document.body.appendChild(windowElement);
+    document.getElementById('wbes-debug-close')?.addEventListener('click', () => windowElement.remove());
+    document.getElementById('wbes-debug-force')?.addEventListener('click', forceOpenPanel);
+    document.getElementById('wbes-debug-rebuild')?.addEventListener('click', rebuildAndOpenPanel);
+    document.getElementById('wbes-debug-copy')?.addEventListener('click', copyDebugInfo);
 }
 
 function escapeHtml(value) {
@@ -421,6 +584,11 @@ function openPanelFromLauncher(event) {
 
     lastLauncherOpenAt = now;
     showPanel();
+    setTimeout(() => {
+        if (!isPanelVisible()) {
+            showDebugWindow('点击入口后面板未显示');
+        }
+    }, 100);
 }
 
 function renderHistory() {

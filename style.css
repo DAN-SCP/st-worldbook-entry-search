@@ -273,6 +273,64 @@
     outline-offset: 2px;
 }
 
+#wbes-debug-window {
+    position: fixed;
+    inset: 0;
+    z-index: 10000000;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 18px;
+    background: rgba(0, 0, 0, 0.42);
+    color: var(--SmartThemeBodyColor);
+}
+
+.wbes-debug-card {
+    width: min(620px, 96vw);
+    max-height: 88vh;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 14px;
+    border: 1px solid var(--SmartThemeBorderColor);
+    border-radius: 8px;
+    background: var(--SmartThemeBlurTintColor);
+    box-shadow: 0 18px 60px rgba(0, 0, 0, 0.4);
+    backdrop-filter: blur(var(--SmartThemeBlurStrength));
+}
+
+.wbes-debug-header,
+.wbes-debug-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.wbes-debug-header {
+    justify-content: space-between;
+}
+
+.wbes-debug-summary {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    font-size: 12px;
+    line-height: 1.35;
+}
+
+.wbes-debug-actions {
+    flex-wrap: wrap;
+}
+
+#wbes-debug-output {
+    width: 100%;
+    min-height: 180px;
+    resize: vertical;
+    white-space: pre;
+    font-family: monospace;
+    font-size: 11px;
+}
+
 @keyframes wbes-highlight {
     0% {
         background: rgba(255, 230, 120, 0.35);
@@ -391,6 +449,29 @@
         overflow: hidden;
         text-overflow: ellipsis;
         white-space: nowrap;
+    }
+
+    #wbes-debug-window {
+        align-items: flex-end;
+        padding: 0;
+    }
+
+    .wbes-debug-card {
+        width: 100vw;
+        max-height: 82dvh;
+        border-right: 0;
+        border-bottom: 0;
+        border-left: 0;
+        border-radius: 12px 12px 0 0;
+        padding-bottom: max(14px, env(safe-area-inset-bottom));
+    }
+
+    .wbes-debug-actions .menu_button {
+        min-height: 40px;
+    }
+
+    #wbes-debug-output {
+        min-height: 150px;
     }
 }
 
