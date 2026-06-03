@@ -32,6 +32,7 @@ let state = {
 const elements = {};
 let lastLauncherOpenAt = 0;
 let lastDebugReason = '';
+let globalKeydownBound = false;
 
 function debounce(fn, wait) {
     let timeout = null;
@@ -46,11 +47,12 @@ function delay(ms) {
 }
 
 function isMobileViewport() {
-    return globalThis.matchMedia?.('(max-width: 700px)')?.matches || globalThis.innerWidth <= 700;
+    return Boolean(globalThis.matchMedia?.('(max-width: 700px)')?.matches || globalThis.innerWidth <= 700);
 }
 
 function bindPanelElements() {
     elements.backdrop = document.getElementById('wbes-backdrop');
+    elements.panel = document.getElementById('wbes-panel');
     elements.input = document.getElementById('wbes-input');
     elements.history = document.getElementById('wbes-history-list');
     elements.entryHistory = document.getElementById('wbes-entry-history-list');
@@ -63,6 +65,7 @@ function hasCompletePanelElements() {
     bindPanelElements();
     return Boolean(
         elements.backdrop
+        && elements.panel
         && elements.input
         && elements.history
         && elements.entryHistory
@@ -76,6 +79,7 @@ function getMissingPanelElements() {
     bindPanelElements();
     return Object.entries({
         backdrop: elements.backdrop,
+        panel: elements.panel,
         input: elements.input,
         history: elements.history,
         entryHistory: elements.entryHistory,
@@ -85,13 +89,17 @@ function getMissingPanelElements() {
     }).filter(([, value]) => !value).map(([key]) => key);
 }
 
+function clearElementRefs() {
+    Object.keys(elements).forEach(key => {
+        elements[key] = null;
+    });
+}
+
 function removeExistingUi() {
     document.getElementById('wbes-launcher')?.remove();
     document.getElementById('wbes-backdrop')?.remove();
     document.getElementById('wbes-debug-window')?.remove();
-    Object.keys(elements).forEach(key => {
-        elements[key] = null;
-    });
+    clearElementRefs();
 }
 
 function isPanelVisible() {
@@ -102,12 +110,17 @@ function isPanelVisible() {
     }
 
     const backdropStyle = getComputedStyle(backdrop);
+    const panelStyle = getComputedStyle(panel);
     const panelRect = panel.getBoundingClientRect();
+
     return !backdrop.hidden
+        && !backdrop.hasAttribute('hidden')
         && backdrop.classList.contains('wbes-open')
         && backdropStyle.display !== 'none'
         && backdropStyle.visibility !== 'hidden'
         && Number(backdropStyle.opacity || 1) > 0
+        && panelStyle.display !== 'none'
+        && panelStyle.visibility !== 'hidden'
         && panelRect.width > 0
         && panelRect.height > 0;
 }
@@ -116,8 +129,12 @@ function collectDebugInfo(reason = lastDebugReason) {
     const backdrop = document.getElementById('wbes-backdrop');
     const panel = document.getElementById('wbes-panel');
     const launcher = document.getElementById('wbes-launcher');
+    const launcherParent = launcher?.parentElement ?? null;
+    const options = document.getElementById('options');
+    const optionsContent = document.querySelector('#options .options-content');
     const backdropStyle = backdrop instanceof HTMLElement ? getComputedStyle(backdrop) : null;
     const panelStyle = panel instanceof HTMLElement ? getComputedStyle(panel) : null;
+    const optionsStyle = options instanceof HTMLElement ? getComputedStyle(options) : null;
     const panelRect = panel instanceof HTMLElement ? panel.getBoundingClientRect() : null;
 
     return {
@@ -137,15 +154,28 @@ function collectDebugInfo(reason = lastDebugReason) {
         },
         elements: {
             launcherExists: Boolean(launcher),
+            launcherParentId: launcherParent?.id || null,
+            launcherParentClass: launcherParent?.className || null,
+            optionsExists: Boolean(options),
+            optionsContentExists: Boolean(optionsContent),
             backdropExists: Boolean(backdrop),
             panelExists: Boolean(panel),
             missingPanelElements: getMissingPanelElements(),
         },
+        options: options instanceof HTMLElement ? {
+            inlineDisplay: options.style.display,
+            computedDisplay: optionsStyle?.display,
+            computedVisibility: optionsStyle?.visibility,
+            computedZIndex: optionsStyle?.zIndex,
+        } : null,
         backdrop: backdrop instanceof HTMLElement ? {
             hidden: backdrop.hidden,
             hasHiddenAttribute: backdrop.hasAttribute('hidden'),
             className: backdrop.className,
             inlineDisplay: backdrop.style.display,
+            inlineVisibility: backdrop.style.visibility,
+            inlineOpacity: backdrop.style.opacity,
+            inlineZIndex: backdrop.style.zIndex,
             computedDisplay: backdropStyle?.display,
             computedVisibility: backdropStyle?.visibility,
             computedOpacity: backdropStyle?.opacity,
@@ -167,15 +197,10 @@ function collectDebugInfo(reason = lastDebugReason) {
     };
 }
 
-function forceOpenPanel() {
-    if (!hasCompletePanelElements()) {
-        buildUi();
-    }
+function forceBackdropVisible() {
     bindPanelElements();
-
     if (!(elements.backdrop instanceof HTMLElement)) {
-        showDebugWindow('强制打开失败：backdrop 不存在');
-        return;
+        return false;
     }
 
     elements.backdrop.hidden = false;
@@ -185,6 +210,24 @@ function forceOpenPanel() {
     elements.backdrop.style.visibility = 'visible';
     elements.backdrop.style.opacity = '1';
     elements.backdrop.style.zIndex = '9999999';
+    return true;
+}
+
+function forceOpenPanel() {
+    if (!hasCompletePanelElements()) {
+        rebuildUi();
+    }
+    bindPanelElements();
+
+    if (!forceBackdropVisible()) {
+        showDebugWindow('强制打开失败：backdrop 不存在');
+        return;
+    }
+
+    state.isOpen = true;
+    if (isMobileViewport() && document.activeElement instanceof HTMLElement) {
+        document.activeElement.blur();
+    }
 
     renderHistory();
     renderEntryHistory();
@@ -192,8 +235,7 @@ function forceOpenPanel() {
 }
 
 function rebuildAndOpenPanel() {
-    removeExistingUi();
-    buildUi();
+    rebuildUi();
     showPanel();
 }
 
@@ -210,16 +252,13 @@ async function copyDebugInfo() {
         toastSuccess('调试信息已复制');
     } catch (error) {
         console.warn(`[${EXTENSION_ID}] Clipboard copy failed.`, error);
-        toastInfo('复制失败，已显示在文本框里，请手动复制');
+        toastInfo('复制失败，信息已显示在文本框里，请手动复制。');
     }
 }
 
 function showDebugWindow(reason = '面板未显示') {
     lastDebugReason = reason;
-    const existing = document.getElementById('wbes-debug-window');
-    if (existing) {
-        existing.remove();
-    }
+    document.getElementById('wbes-debug-window')?.remove();
 
     const info = collectDebugInfo(reason);
     const windowElement = document.createElement('div');
@@ -237,6 +276,7 @@ function showDebugWindow(reason = '面板未显示') {
                 <div>面板可见：${info.panelVisible ? '是' : '否'}</div>
                 <div>手机视图：${info.isMobileViewport ? '是' : '否'} · ${info.viewport.innerWidth}x${info.viewport.innerHeight}</div>
                 <div>缺失元素：${escapeHtml(info.elements.missingPanelElements.join(', ') || '无')}</div>
+                <div>入口父级：${escapeHtml(info.elements.launcherParentId || info.elements.launcherParentClass || '无')}</div>
                 <div>backdrop：${info.elements.backdropExists ? '存在' : '不存在'} · panel：${info.elements.panelExists ? '存在' : '不存在'}</div>
             </div>
             <div class="wbes-debug-actions">
@@ -529,20 +569,30 @@ async function runSearch(query) {
 
 const debouncedSearch = debounce(runSearch, SEARCH_DELAY);
 
+function hideSillyTavernOptionsMenu() {
+    try {
+        $('#options').hide();
+    } catch {
+        const options = document.getElementById('options');
+        if (options instanceof HTMLElement) {
+            options.style.display = 'none';
+        }
+    }
+}
+
 function showPanel() {
     state.isOpen = true;
     if (!hasCompletePanelElements()) {
-        buildUi();
+        rebuildUi();
     }
     if (!hasCompletePanelElements()) {
         console.error(`[${EXTENSION_ID}] Search panel could not be created. Missing:`, getMissingPanelElements());
         toastError('搜索面板创建失败，请刷新页面后重试。');
+        showDebugWindow('搜索面板创建失败');
         return;
     }
 
-    elements.backdrop.hidden = false;
-    elements.backdrop.removeAttribute('hidden');
-    elements.backdrop.classList.add('wbes-open');
+    forceBackdropVisible();
 
     if (isMobileViewport()) {
         if (document.activeElement instanceof HTMLElement) {
@@ -566,16 +616,20 @@ function hidePanel() {
     if (!elements.backdrop) {
         bindPanelElements();
     }
-    if (elements.backdrop) {
+    if (elements.backdrop instanceof HTMLElement) {
         elements.backdrop.classList.remove('wbes-open');
         elements.backdrop.hidden = true;
+        elements.backdrop.setAttribute('hidden', '');
+        elements.backdrop.style.display = 'none';
+        elements.backdrop.style.visibility = '';
+        elements.backdrop.style.opacity = '';
+        elements.backdrop.style.zIndex = '';
     }
 }
 
 function openPanelFromLauncher(event) {
     event?.preventDefault?.();
     event?.stopPropagation?.();
-    event?.stopImmediatePropagation?.();
 
     const now = Date.now();
     if (now - lastLauncherOpenAt < 350) {
@@ -583,6 +637,7 @@ function openPanelFromLauncher(event) {
     }
 
     lastLauncherOpenAt = now;
+    hideSillyTavernOptionsMenu();
     showPanel();
     setTimeout(() => {
         if (!isPanelVisible()) {
@@ -592,6 +647,8 @@ function openPanelFromLauncher(event) {
 }
 
 function renderHistory() {
+    if (!elements.history || !elements.clearHistory) return;
+
     const history = getHistory();
     elements.history.innerHTML = history.length
         ? history.map(item => `<button type="button" class="wbes-history-item" data-query="${escapeHtml(item)}">${escapeHtml(item)}</button>`).join('')
@@ -600,7 +657,7 @@ function renderHistory() {
 }
 
 async function renderEntryHistory() {
-    if (!elements.entryHistory) return;
+    if (!elements.entryHistory || !elements.clearEntryHistory) return;
 
     const history = getEntryHistory();
     elements.entryHistory.innerHTML = history.length
@@ -647,6 +704,8 @@ async function refreshEntryHistoryStatuses() {
 }
 
 function renderResults() {
+    if (!elements.results) return;
+
     const activeCount = document.getElementById('wbes-active-count');
     if (activeCount) {
         activeCount.textContent = `${getActiveWorldNames().length} 本启用`;
@@ -717,11 +776,12 @@ async function calculateEntryPage(worldName, uid) {
     const data = await loadWorldInfo(worldName);
     const entries = Object.keys(data?.entries ?? {})
         .map(entryUid => {
-            const entry = data.entries[entryUid];
-            if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+            const source = data.entries[entryUid];
+            if (!source || typeof source !== 'object' || Array.isArray(source)) {
                 return null;
             }
 
+            const entry = { ...source };
             entry.uid = Number(entry.uid ?? entryUid);
             entry.displayIndex = entry.displayIndex ?? entry.uid;
             entry.order = Number(entry.order ?? 100);
@@ -895,45 +955,44 @@ async function locateResult(result) {
     toastInfo(`已打开世界书 "${result.worldName}" 的${pageText}。请查找条目：${result.title} / UID ${result.uid}`);
 }
 
-function buildUi() {
-    const existingLauncher = document.getElementById('wbes-launcher');
-    const existingBackdrop = document.getElementById('wbes-backdrop');
-    if (existingLauncher && existingBackdrop && hasCompletePanelElements()) {
-        const launcher = existingLauncher;
-        launcher.addEventListener('click', openPanelFromLauncher, true);
-        launcher.addEventListener('pointerup', openPanelFromLauncher, true);
-        launcher.addEventListener('touchend', openPanelFromLauncher, true);
-        cleanupHistory();
-        renderHistory();
-        renderEntryHistory();
-        renderResults();
+function createLauncher() {
+    const launcher = document.createElement('div');
+    launcher.id = 'wbes-launcher';
+    launcher.className = 'list-group-item flex-container flexGap5 interactable';
+    launcher.tabIndex = 0;
+    launcher.title = '搜索当前启用世界书的小条目';
+    launcher.innerHTML = '<i class="fa-solid fa-book-open"></i><span>世界书搜索</span>';
+    launcher.addEventListener('click', openPanelFromLauncher);
+    launcher.addEventListener('keydown', event => {
+        if (event.key === 'Enter' || event.key === ' ') {
+            openPanelFromLauncher(event);
+        }
+    });
+    return launcher;
+}
+
+function mountLauncher(launcher) {
+    const optionsContent = document.querySelector('#options .options-content');
+    const extensionsMenu = document.getElementById('extensionsMenu');
+
+    if (optionsContent) {
+        optionsContent.appendChild(launcher);
         return;
     }
 
-    if (existingLauncher || existingBackdrop) {
-        removeExistingUi();
+    if (extensionsMenu) {
+        extensionsMenu.appendChild(launcher);
+        return;
     }
 
-    const launcher = document.createElement('button');
-    launcher.id = 'wbes-launcher';
-    launcher.type = 'button';
-    launcher.className = 'menu_button menu_button_icon';
-    launcher.title = '搜索当前启用世界书的小条目';
-    launcher.innerHTML = '<i class="fa-solid fa-book-open"></i><span>世界书搜索</span>';
-    launcher.addEventListener('click', openPanelFromLauncher, true);
-    launcher.addEventListener('pointerup', openPanelFromLauncher, true);
-    launcher.addEventListener('touchend', openPanelFromLauncher, true);
+    document.body.appendChild(launcher);
+}
 
-    const menu = document.getElementById('extensionsMenu');
-    if (menu) {
-        menu.appendChild(launcher);
-    } else {
-        document.body.appendChild(launcher);
-    }
-
+function createBackdrop() {
     const backdrop = document.createElement('div');
     backdrop.id = 'wbes-backdrop';
     backdrop.hidden = true;
+    backdrop.style.display = 'none';
     backdrop.innerHTML = `
         <section id="wbes-panel" role="dialog" aria-modal="true" aria-label="世界书条目搜索">
             <header class="wbes-header">
@@ -970,37 +1029,39 @@ function buildUi() {
         </section>
     `;
     document.body.appendChild(backdrop);
+    return backdrop;
+}
 
-    bindPanelElements();
+function bindPanelEvents(backdrop) {
+    document.getElementById('wbes-close')?.addEventListener('click', hidePanel);
+    elements.clearHistory?.addEventListener('click', clearHistory);
+    elements.clearEntryHistory?.addEventListener('click', clearEntryHistory);
 
-    document.getElementById('wbes-close').addEventListener('click', hidePanel);
-    elements.clearHistory.addEventListener('click', clearHistory);
-    elements.clearEntryHistory.addEventListener('click', clearEntryHistory);
     backdrop.addEventListener('click', event => {
         if (event.target === backdrop) hidePanel();
     });
 
-    elements.input.addEventListener('input', event => {
+    elements.input?.addEventListener('input', event => {
         if (event.target instanceof HTMLInputElement) {
             debouncedSearch(event.target.value);
         }
     });
 
-    elements.input.addEventListener('keydown', event => {
+    elements.input?.addEventListener('keydown', event => {
         if (event.key === 'Escape') hidePanel();
         if (event.key === 'Enter' && state.results.length) openResult(0);
     });
 
-    elements.history.addEventListener('click', event => {
+    elements.history?.addEventListener('click', event => {
         if (!(event.target instanceof Element)) return;
         const button = event.target.closest('.wbes-history-item');
-        if (!button) return;
+        if (!(button instanceof HTMLElement)) return;
         elements.input.value = button.dataset.query || '';
         addHistory(elements.input.value);
         runSearch(elements.input.value);
     });
 
-    elements.entryHistory.addEventListener('click', event => {
+    elements.entryHistory?.addEventListener('click', event => {
         if (!(event.target instanceof Element)) return;
         const item = event.target.closest('.wbes-entry-history-item');
         if (!(item instanceof HTMLElement)) return;
@@ -1016,7 +1077,7 @@ function buildUi() {
         }
     });
 
-    elements.results.addEventListener('click', event => {
+    elements.results?.addEventListener('click', event => {
         if (!(event.target instanceof Element)) return;
         const item = event.target.closest('.wbes-result');
         if (!(item instanceof HTMLElement)) return;
@@ -1031,6 +1092,11 @@ function buildUi() {
             openResult(index);
         }
     });
+}
+
+function bindGlobalEvents() {
+    if (globalKeydownBound) return;
+    globalKeydownBound = true;
 
     document.addEventListener('keydown', event => {
         if (event.key === 'Escape' && state.isOpen) hidePanel();
@@ -1039,11 +1105,43 @@ function buildUi() {
             showPanel();
         }
     });
+}
+
+function rebuildUi() {
+    removeExistingUi();
+
+    const launcher = createLauncher();
+    mountLauncher(launcher);
+
+    const backdrop = createBackdrop();
+    bindPanelElements();
+    bindPanelEvents(backdrop);
+    bindGlobalEvents();
 
     cleanupHistory();
     renderHistory();
     renderEntryHistory();
     renderResults();
+}
+
+function buildUi() {
+    const existingLauncher = document.getElementById('wbes-launcher');
+    const existingBackdrop = document.getElementById('wbes-backdrop');
+
+    if (existingLauncher && existingBackdrop && hasCompletePanelElements()) {
+        const optionsContent = document.querySelector('#options .options-content');
+        if (optionsContent && existingLauncher.parentElement !== optionsContent) {
+            optionsContent.appendChild(existingLauncher);
+        }
+        bindGlobalEvents();
+        cleanupHistory();
+        renderHistory();
+        renderEntryHistory();
+        renderResults();
+        return;
+    }
+
+    rebuildUi();
 }
 
 jQuery(async () => {

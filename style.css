@@ -1,5 +1,8 @@
 #wbes-launcher {
+    align-items: center;
+    cursor: pointer;
     gap: 6px;
+    user-select: none;
     touch-action: manipulation;
 }
 
@@ -20,9 +23,9 @@
 }
 
 #wbes-backdrop.wbes-open {
-    display: flex;
-    visibility: visible;
-    opacity: 1;
+    display: flex !important;
+    visibility: visible !important;
+    opacity: 1 !important;
 }
 
 #wbes-panel {
