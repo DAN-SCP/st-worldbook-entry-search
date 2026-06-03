@@ -44,6 +44,20 @@ function delay(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+function isMobileViewport() {
+    return globalThis.matchMedia?.('(max-width: 700px)')?.matches || globalThis.innerWidth <= 700;
+}
+
+function bindPanelElements() {
+    elements.backdrop = document.getElementById('wbes-backdrop');
+    elements.input = document.getElementById('wbes-input');
+    elements.history = document.getElementById('wbes-history-list');
+    elements.entryHistory = document.getElementById('wbes-entry-history-list');
+    elements.results = document.getElementById('wbes-results-list');
+    elements.clearHistory = document.getElementById('wbes-clear-history');
+    elements.clearEntryHistory = document.getElementById('wbes-clear-entry-history');
+}
+
 function escapeHtml(value) {
     return String(value ?? '')
         .replaceAll('&', '&amp;')
@@ -320,28 +334,47 @@ const debouncedSearch = debounce(runSearch, SEARCH_DELAY);
 
 function showPanel() {
     state.isOpen = true;
-    if (!elements.backdrop) {
+    bindPanelElements();
+    if (!elements.backdrop || !elements.input || !elements.history || !elements.results) {
         buildUi();
+        bindPanelElements();
     }
-    if (!elements.backdrop) {
+    if (!elements.backdrop || !elements.input || !elements.history || !elements.results) {
         console.error(`[${EXTENSION_ID}] Search panel could not be created.`);
         toastError('搜索面板创建失败，请刷新页面后重试。');
         return;
     }
+
     elements.backdrop.hidden = false;
     elements.backdrop.removeAttribute('hidden');
-    try {
-        elements.input.focus({ preventScroll: true });
-    } catch {
-        elements.input.focus();
+    elements.backdrop.classList.add('wbes-open');
+
+    if (isMobileViewport()) {
+        if (document.activeElement instanceof HTMLElement) {
+            document.activeElement.blur();
+        }
+    } else {
+        try {
+            elements.input.focus({ preventScroll: true });
+        } catch {
+            elements.input.focus();
+        }
     }
+
     renderHistory();
+    renderEntryHistory();
     renderResults();
 }
 
 function hidePanel() {
     state.isOpen = false;
-    elements.backdrop.hidden = true;
+    if (!elements.backdrop) {
+        bindPanelElements();
+    }
+    if (elements.backdrop) {
+        elements.backdrop.classList.remove('wbes-open');
+        elements.backdrop.hidden = true;
+    }
 }
 
 function openPanelFromLauncher(event) {
@@ -670,13 +703,7 @@ function buildUi() {
         launcher.addEventListener('click', openPanelFromLauncher, true);
         launcher.addEventListener('pointerup', openPanelFromLauncher, true);
         launcher.addEventListener('touchend', openPanelFromLauncher, true);
-        elements.backdrop = existingBackdrop;
-        elements.input = document.getElementById('wbes-input');
-        elements.history = document.getElementById('wbes-history-list');
-        elements.entryHistory = document.getElementById('wbes-entry-history-list');
-        elements.results = document.getElementById('wbes-results-list');
-        elements.clearHistory = document.getElementById('wbes-clear-history');
-        elements.clearEntryHistory = document.getElementById('wbes-clear-entry-history');
+        bindPanelElements();
         cleanupHistory();
         renderHistory();
         renderEntryHistory();
@@ -745,13 +772,7 @@ function buildUi() {
     `;
     document.body.appendChild(backdrop);
 
-    elements.backdrop = backdrop;
-    elements.input = document.getElementById('wbes-input');
-    elements.history = document.getElementById('wbes-history-list');
-    elements.entryHistory = document.getElementById('wbes-entry-history-list');
-    elements.results = document.getElementById('wbes-results-list');
-    elements.clearHistory = document.getElementById('wbes-clear-history');
-    elements.clearEntryHistory = document.getElementById('wbes-clear-entry-history');
+    bindPanelElements();
 
     document.getElementById('wbes-close').addEventListener('click', hidePanel);
     elements.clearHistory.addEventListener('click', clearHistory);
