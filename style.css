@@ -6,6 +6,10 @@
     touch-action: manipulation;
 }
 
+#wbes-floating-launcher {
+    display: none;
+}
+
 #wbes-backdrop {
     position: fixed;
     inset: 0;
@@ -344,6 +348,24 @@
 }
 
 @media (max-width: 700px) {
+    #wbes-floating-launcher {
+        position: fixed;
+        right: max(12px, env(safe-area-inset-right));
+        bottom: max(14px, env(safe-area-inset-bottom));
+        z-index: 999998;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 6px;
+        min-width: 112px;
+        min-height: 44px;
+        padding: 8px 12px;
+        border: 1px solid var(--SmartThemeBorderColor);
+        border-radius: 999px;
+        box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+        touch-action: manipulation;
+    }
+
     #wbes-launcher {
         min-height: 40px;
         min-width: 40px;

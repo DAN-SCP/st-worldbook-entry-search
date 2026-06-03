@@ -13,6 +13,7 @@ import { accountStorage } from '../../../util/AccountStorage.js';
 const EXTENSION_ID = 'st-worldbook-entry-search';
 const STORAGE_KEY = 'st-worldbook-entry-search-history';
 const ENTRY_HISTORY_KEY = 'st-worldbook-entry-search-entry-history';
+const FLOATING_LAUNCHER_ID = 'wbes-floating-launcher';
 const WI_PER_PAGE_KEY = 'WI_PerPage';
 const WI_PER_PAGE_DEFAULT = 25;
 const MAX_HISTORY = 20;
@@ -97,6 +98,7 @@ function clearElementRefs() {
 
 function removeExistingUi() {
     document.getElementById('wbes-launcher')?.remove();
+    document.getElementById(FLOATING_LAUNCHER_ID)?.remove();
     document.getElementById('wbes-backdrop')?.remove();
     document.getElementById('wbes-debug-window')?.remove();
     clearElementRefs();
@@ -129,6 +131,7 @@ function collectDebugInfo(reason = lastDebugReason) {
     const backdrop = document.getElementById('wbes-backdrop');
     const panel = document.getElementById('wbes-panel');
     const launcher = document.getElementById('wbes-launcher');
+    const floatingLauncher = document.getElementById(FLOATING_LAUNCHER_ID);
     const launcherParent = launcher?.parentElement ?? null;
     const options = document.getElementById('options');
     const optionsContent = document.querySelector('#options .options-content');
@@ -154,6 +157,7 @@ function collectDebugInfo(reason = lastDebugReason) {
         },
         elements: {
             launcherExists: Boolean(launcher),
+            floatingLauncherExists: Boolean(floatingLauncher),
             launcherParentId: launcherParent?.id || null,
             launcherParentClass: launcherParent?.className || null,
             optionsExists: Boolean(options),
@@ -580,12 +584,16 @@ function hideSillyTavernOptionsMenu() {
     }
 }
 
-function showPanel() {
-    state.isOpen = true;
+function ensurePanelReady() {
     if (!hasCompletePanelElements()) {
         rebuildUi();
     }
-    if (!hasCompletePanelElements()) {
+    return hasCompletePanelElements();
+}
+
+function showPanel() {
+    state.isOpen = true;
+    if (!ensurePanelReady()) {
         console.error(`[${EXTENSION_ID}] Search panel could not be created. Missing:`, getMissingPanelElements());
         toastError('搜索面板创建失败，请刷新页面后重试。');
         showDebugWindow('搜索面板创建失败');
@@ -971,6 +979,17 @@ function createLauncher() {
     return launcher;
 }
 
+function createFloatingLauncher() {
+    const launcher = document.createElement('button');
+    launcher.id = FLOATING_LAUNCHER_ID;
+    launcher.type = 'button';
+    launcher.className = 'menu_button menu_button_icon';
+    launcher.title = '世界书搜索';
+    launcher.innerHTML = '<i class="fa-solid fa-book-open"></i><span>世界书搜索</span>';
+    launcher.addEventListener('click', openPanelFromLauncher);
+    return launcher;
+}
+
 function mountLauncher(launcher) {
     const optionsContent = document.querySelector('#options .options-content');
     const extensionsMenu = document.getElementById('extensionsMenu');
@@ -986,6 +1005,15 @@ function mountLauncher(launcher) {
     }
 
     document.body.appendChild(launcher);
+}
+
+function mountFloatingLauncher() {
+    const existing = document.getElementById(FLOATING_LAUNCHER_ID);
+    if (existing) {
+        return;
+    }
+
+    document.body.appendChild(createFloatingLauncher());
 }
 
 function createBackdrop() {
@@ -1112,6 +1140,7 @@ function rebuildUi() {
 
     const launcher = createLauncher();
     mountLauncher(launcher);
+    mountFloatingLauncher();
 
     const backdrop = createBackdrop();
     bindPanelElements();
@@ -1126,12 +1155,16 @@ function rebuildUi() {
 
 function buildUi() {
     const existingLauncher = document.getElementById('wbes-launcher');
+    const existingFloatingLauncher = document.getElementById(FLOATING_LAUNCHER_ID);
     const existingBackdrop = document.getElementById('wbes-backdrop');
 
     if (existingLauncher && existingBackdrop && hasCompletePanelElements()) {
         const optionsContent = document.querySelector('#options .options-content');
         if (optionsContent && existingLauncher.parentElement !== optionsContent) {
             optionsContent.appendChild(existingLauncher);
+        }
+        if (!existingFloatingLauncher) {
+            mountFloatingLauncher();
         }
         bindGlobalEvents();
         cleanupHistory();
@@ -1144,6 +1177,32 @@ function buildUi() {
     rebuildUi();
 }
 
+function scheduleLauncherRemounts() {
+    const remount = () => {
+        const launcher = document.getElementById('wbes-launcher');
+        const optionsContent = document.querySelector('#options .options-content');
+        if (launcher && optionsContent && launcher.parentElement !== optionsContent) {
+            optionsContent.appendChild(launcher);
+        }
+        mountFloatingLauncher();
+    };
+
+    setTimeout(remount, 500);
+    setTimeout(remount, 1500);
+    setTimeout(remount, 3500);
+
+    const observer = new MutationObserver(() => remount());
+    observer.observe(document.body, { childList: true, subtree: true });
+}
+
+function openFromHashIfRequested() {
+    if (globalThis.location?.hash === '#wbes-open') {
+        setTimeout(() => showPanel(), 300);
+    }
+}
+
 jQuery(async () => {
     buildUi();
+    scheduleLauncherRemounts();
+    openFromHashIfRequested();
 });
