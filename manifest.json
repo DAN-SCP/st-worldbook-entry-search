@@ -1,0 +1,11 @@
+{
+  "display_name": "Worldbook Entry Search",
+  "loading_order": 20,
+  "requires": [],
+  "optional": [],
+  "js": "index.js",
+  "css": "style.css",
+  "author": "Codex",
+  "version": "1.0.0",
+  "homePage": "https://github.com/SillyTavern/SillyTavern"
+}
