@@ -58,6 +58,40 @@ function bindPanelElements() {
     elements.clearEntryHistory = document.getElementById('wbes-clear-entry-history');
 }
 
+function hasCompletePanelElements() {
+    bindPanelElements();
+    return Boolean(
+        elements.backdrop
+        && elements.input
+        && elements.history
+        && elements.entryHistory
+        && elements.results
+        && elements.clearHistory
+        && elements.clearEntryHistory
+    );
+}
+
+function getMissingPanelElements() {
+    bindPanelElements();
+    return Object.entries({
+        backdrop: elements.backdrop,
+        input: elements.input,
+        history: elements.history,
+        entryHistory: elements.entryHistory,
+        results: elements.results,
+        clearHistory: elements.clearHistory,
+        clearEntryHistory: elements.clearEntryHistory,
+    }).filter(([, value]) => !value).map(([key]) => key);
+}
+
+function removeExistingUi() {
+    document.getElementById('wbes-launcher')?.remove();
+    document.getElementById('wbes-backdrop')?.remove();
+    Object.keys(elements).forEach(key => {
+        elements[key] = null;
+    });
+}
+
 function escapeHtml(value) {
     return String(value ?? '')
         .replaceAll('&', '&amp;')
@@ -334,13 +368,11 @@ const debouncedSearch = debounce(runSearch, SEARCH_DELAY);
 
 function showPanel() {
     state.isOpen = true;
-    bindPanelElements();
-    if (!elements.backdrop || !elements.input || !elements.history || !elements.results) {
+    if (!hasCompletePanelElements()) {
         buildUi();
-        bindPanelElements();
     }
-    if (!elements.backdrop || !elements.input || !elements.history || !elements.results) {
-        console.error(`[${EXTENSION_ID}] Search panel could not be created.`);
+    if (!hasCompletePanelElements()) {
+        console.error(`[${EXTENSION_ID}] Search panel could not be created. Missing:`, getMissingPanelElements());
         toastError('搜索面板创建失败，请刷新页面后重试。');
         return;
     }
@@ -698,12 +730,11 @@ async function locateResult(result) {
 function buildUi() {
     const existingLauncher = document.getElementById('wbes-launcher');
     const existingBackdrop = document.getElementById('wbes-backdrop');
-    if (existingLauncher && existingBackdrop) {
+    if (existingLauncher && existingBackdrop && hasCompletePanelElements()) {
         const launcher = existingLauncher;
         launcher.addEventListener('click', openPanelFromLauncher, true);
         launcher.addEventListener('pointerup', openPanelFromLauncher, true);
         launcher.addEventListener('touchend', openPanelFromLauncher, true);
-        bindPanelElements();
         cleanupHistory();
         renderHistory();
         renderEntryHistory();
@@ -711,8 +742,8 @@ function buildUi() {
         return;
     }
 
-    if (existingLauncher && !existingBackdrop) {
-        existingLauncher.remove();
+    if (existingLauncher || existingBackdrop) {
+        removeExistingUi();
     }
 
     const launcher = document.createElement('button');
