@@ -1,5 +1,6 @@
 #wbes-launcher {
     gap: 6px;
+    touch-action: manipulation;
 }
 
 #wbes-backdrop {
@@ -276,6 +277,11 @@
 }
 
 @media (max-width: 700px) {
+    #wbes-launcher {
+        min-height: 40px;
+        min-width: 40px;
+    }
+
     #wbes-backdrop {
         align-items: flex-end;
         justify-content: center;

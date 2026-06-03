@@ -30,6 +30,7 @@ let state = {
 };
 
 const elements = {};
+let lastLauncherOpenAt = 0;
 
 function debounce(fn, wait) {
     let timeout = null;
@@ -319,8 +320,21 @@ const debouncedSearch = debounce(runSearch, SEARCH_DELAY);
 
 function showPanel() {
     state.isOpen = true;
+    if (!elements.backdrop) {
+        buildUi();
+    }
+    if (!elements.backdrop) {
+        console.error(`[${EXTENSION_ID}] Search panel could not be created.`);
+        toastError('搜索面板创建失败，请刷新页面后重试。');
+        return;
+    }
     elements.backdrop.hidden = false;
-    elements.input.focus();
+    elements.backdrop.removeAttribute('hidden');
+    try {
+        elements.input.focus({ preventScroll: true });
+    } catch {
+        elements.input.focus();
+    }
     renderHistory();
     renderResults();
 }
@@ -328,6 +342,20 @@ function showPanel() {
 function hidePanel() {
     state.isOpen = false;
     elements.backdrop.hidden = true;
+}
+
+function openPanelFromLauncher(event) {
+    event?.preventDefault?.();
+    event?.stopPropagation?.();
+    event?.stopImmediatePropagation?.();
+
+    const now = Date.now();
+    if (now - lastLauncherOpenAt < 350) {
+        return;
+    }
+
+    lastLauncherOpenAt = now;
+    showPanel();
 }
 
 function renderHistory() {
@@ -635,8 +663,14 @@ async function locateResult(result) {
 }
 
 function buildUi() {
-    if (document.getElementById('wbes-launcher')) {
-        elements.backdrop = document.getElementById('wbes-backdrop');
+    const existingLauncher = document.getElementById('wbes-launcher');
+    const existingBackdrop = document.getElementById('wbes-backdrop');
+    if (existingLauncher && existingBackdrop) {
+        const launcher = existingLauncher;
+        launcher.addEventListener('click', openPanelFromLauncher, true);
+        launcher.addEventListener('pointerup', openPanelFromLauncher, true);
+        launcher.addEventListener('touchend', openPanelFromLauncher, true);
+        elements.backdrop = existingBackdrop;
         elements.input = document.getElementById('wbes-input');
         elements.history = document.getElementById('wbes-history-list');
         elements.entryHistory = document.getElementById('wbes-entry-history-list');
@@ -650,13 +684,19 @@ function buildUi() {
         return;
     }
 
+    if (existingLauncher && !existingBackdrop) {
+        existingLauncher.remove();
+    }
+
     const launcher = document.createElement('button');
     launcher.id = 'wbes-launcher';
     launcher.type = 'button';
     launcher.className = 'menu_button menu_button_icon';
     launcher.title = '搜索当前启用世界书的小条目';
     launcher.innerHTML = '<i class="fa-solid fa-book-open"></i><span>世界书搜索</span>';
-    launcher.addEventListener('click', showPanel);
+    launcher.addEventListener('click', openPanelFromLauncher, true);
+    launcher.addEventListener('pointerup', openPanelFromLauncher, true);
+    launcher.addEventListener('touchend', openPanelFromLauncher, true);
 
     const menu = document.getElementById('extensionsMenu');
     if (menu) {
